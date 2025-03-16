@@ -1,0 +1,69 @@
+.env
+venv/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.idea/
+.vscode/
+*.log
+
+# Cursor specific
+.cursor/
+.cursor.json
+cursor.json
+
+# Workspace files
+*.workspace
+workspace.json
+.workspace/
+workspace/
+
+# MCP (Multi-Cursor Protocol) files
+.mcp/
+mcp.json
+.mcp.json
+
+# Python specific additional patterns
+*.pyo
+*.pyd
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environment directories
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# System files
+Thumbs.db
+ehthumbs.db
+Desktop.ini 
