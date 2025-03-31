@@ -40,11 +40,106 @@ get_confirmation() {
     esac
 }
 
-setup_venv() {
-    local skip_prompt=$([[ "$*" == *"--skip-prompt"* ]] && echo true || echo false)
-    local venv_name="venv"
+check_package_installed() {
+    local package=$1
+    if command -v python3 >/dev/null 2>&1; then
+        if python3 -c "import $package" &>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Start main script execution
+print_section "ComfyUI Setup Script"
+
+# Check for --skip-prompt flag first
+skip_prompt=false
+for arg in "$@"; do
+    if [[ $arg == "--skip-prompt" ]]; then
+        skip_prompt=true
+        break
+    fi
+done
+
+# Load .env file first if it exists
+if [ -f .env ]; then
+    log_info "Loading .env file"
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Skip comments and empty lines
+        if [[ $line =~ ^[[:space:]]*# ]] || [[ -z $line ]]; then
+            continue
+        fi
+        
+        # Extract key and value
+        key=$(echo "$line" | cut -d'=' -f1)
+        value=$(echo "$line" | cut -d'=' -f2-)
+        
+        # Only set the value if it's not empty
+        if [ -n "$value" ]; then
+            export "$key=$value"
+        fi
+    done < .env
+fi
+
+# Check for --comfy-path argument (highest priority)
+for arg in "$@"; do
+    if [[ $arg == --comfy-path=* ]]; then
+        export COMFY_PATH="${arg#*=}"
+        break
+    fi
+done
+
+# If not skipping prompts, ask for path first
+if [ "$skip_prompt" = false ]; then
+    # Get default path from environment or use ~/ComfyUI
+    default_path="${COMFY_PATH:-$HOME/ComfyUI}"
+    # Expand any ~ in the default path
+    default_path=$(eval echo "$default_path")
+    printf "\033[0;36mEnter ComfyUI path\033[0m (default: %s): " "$default_path"
+    read -r user_input
+    if [ -n "$user_input" ]; then
+        export COMFY_PATH="$user_input"
+    else
+        export COMFY_PATH="$default_path"
+    fi
+elif [ -z "$COMFY_PATH" ] || [ "$COMFY_PATH" = '""' ]; then
+    # If skipping prompts and no path set, use default
+    export COMFY_PATH="$HOME/ComfyUI"
+    log_info "Using default ComfyUI path (--skip-prompt)"
+fi
+
+# Ensure COMFY_PATH is properly expanded and not empty
+if [ -z "$COMFY_PATH" ]; then
+    export COMFY_PATH="$HOME"
+fi
+COMFY_PATH=$(eval echo "$COMFY_PATH")
+COMFY_PATH="${COMFY_PATH%/}"  # Remove trailing slash if present
+log_info "Using ComfyUI path: $COMFY_PATH"
+
+# Create parent directories if they don't exist
+parent_dir=$(dirname "$COMFY_PATH")
+if [ ! -d "$parent_dir" ]; then
+    log_info "Creating parent directory: $parent_dir"
+    log_cmd "mkdir -p $parent_dir"
+    mkdir -p "$parent_dir"
+fi
+
+# Setup Python environment
+print_section "Python Environment Setup"
+
+# Handle venv setup if specified or if not skipping prompts
+if [ "$skip_prompt" = false ] || [[ "$*" == *"--venv"* ]]; then
+    # First ask if we want to create a venv
+    if [ "$skip_prompt" = false ]; then
+        if ! get_confirmation "Do you want to create a virtual environment?"; then
+            log_info "Skipping virtual environment creation"
+            exit 0
+        fi
+    fi
     
-    # Parse arguments for --venv=name
+    # Get venv name from args or prompt
+    venv_name="venv"
     for arg in "$@"; do
         if [[ $arg == --venv=* ]]; then
             venv_name="${arg#*=}"
@@ -52,8 +147,7 @@ setup_venv() {
         fi
     done
     
-    # If no venv name provided through argument and not skipping prompt
-    if [[ "$skip_prompt" = "false" && "$venv_name" = "venv" ]]; then
+    if [ "$skip_prompt" = false ] && [ "$venv_name" = "venv" ]; then
         printf "\033[0;36mEnter virtual environment name\033[0m (default: venv): "
         read -r user_input
         if [ -n "$user_input" ]; then
@@ -61,9 +155,8 @@ setup_venv() {
         fi
     fi
     
-    # Get parent directory of COMFY_PATH for venv placement
-    local parent_dir=$(dirname "$COMFY_PATH")
-    local venv_path="$parent_dir/$venv_name"
+    # Create venv in the same directory as COMFY_PATH
+    venv_path="$COMFY_PATH/$venv_name"
     
     # Check if venv exists
     if [ -d "$venv_path" ] && [ -f "$venv_path/bin/activate" ]; then
@@ -85,93 +178,6 @@ setup_venv() {
         log_error "Failed to activate virtual environment: $venv_path"
         exit 1
     fi
-}
-
-check_package_installed() {
-    local package=$1
-    if command -v python3 >/dev/null 2>&1; then
-        if python3 -c "import $package" &>/dev/null; then
-            return 0
-        fi
-    fi
-    return 1
-}
-
-# Start main script execution
-print_section "ComfyUI Setup Script"
-
-# Load .env file first if it exists
-if [ -f .env ]; then
-    log_info "Loading .env file"
-    while IFS= read -r line || [ -n "$line" ]; do
-        # Skip comments and empty lines
-        if [[ $line =~ ^[[:space:]]*# ]] || [[ -z $line ]]; then
-            continue
-        fi
-        
-        # Extract key and value
-        key=$(echo "$line" | cut -d'=' -f1)
-        value=$(echo "$line" | cut -d'=' -f2-)
-        
-        # Set the value (will be overridden by environment if exists)
-        export "$key=$value"
-    done < .env
-fi
-
-# Check for --comfy-path argument (highest priority)
-for arg in "$@"; do
-    if [[ $arg == --comfy-path=* ]]; then
-        export COMFY_PATH="${arg#*=}"
-        break
-    fi
-done
-
-# If COMFY_PATH is not set or empty after .env and args, prompt or use default
-if [ -z "${COMFY_PATH:+x}" ] || [ -z "$COMFY_PATH" ]; then
-    if [[ "$*" != *"--skip-prompt"* ]]; then
-        printf "\033[0;36mEnter ComfyUI path\033[0m (default: %s/ComfyUI): " "$HOME"
-        read -r user_input
-        if [ -n "$user_input" ]; then
-            export COMFY_PATH="$user_input"
-        else
-            export COMFY_PATH="$HOME/ComfyUI"
-        fi
-    else
-        export COMFY_PATH="$HOME/ComfyUI"
-        log_info "Using default ComfyUI path (--skip-prompt)"
-    fi
-fi
-
-log_info "Using ComfyUI path: $COMFY_PATH"
-
-# Create parent directories if they don't exist
-parent_dir=$(dirname "$COMFY_PATH")
-if [ ! -d "$parent_dir" ]; then
-    log_info "Creating parent directory: $parent_dir"
-    log_cmd "mkdir -p $parent_dir"
-    mkdir -p "$parent_dir"
-fi
-
-# Setup Python environment
-print_section "Python Environment Setup"
-
-# If no environment type specified and not skipping prompts, ask user
-if [[ "$*" != *"--venv"* ]] && [[ "$*" != *"--skip-prompt"* ]]; then
-    echo -e "\033[0;36mUse virtual environment?\033[0m"
-    printf "1) Yes\n2) No\n"
-    read -p "Your choice (default: 2): " user_choice
-    
-    case "${user_choice:-2}" in
-        1|"yes"|"y"|"Yes"|"Y")
-            setup_venv "$@"
-            ;;
-        *)
-            log_info "Proceeding without virtual environment"
-            ;;
-    esac
-# Handle venv setup if specified
-elif [[ "$*" == *"--venv"* ]]; then
-    setup_venv "$@"
 else
     # Only reach here if --skip-prompt is used without specifying an environment
     log_info "Proceeding without virtual environment (--skip-prompt)"

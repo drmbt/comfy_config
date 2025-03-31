@@ -153,7 +153,7 @@ def get_gpu_selection(skip_prompt: bool = False) -> str:
         logger.info("Using Intel Arc GPU (from command line args)")
         return 'intel_arc'
     
-    # Check environment variable
+    # Check environment variabley
     default_gpu = os.getenv('DEFAULT_GPU')
     if default_gpu:
         if skip_prompt:
@@ -214,6 +214,17 @@ def get_gpu_selection(skip_prompt: bool = False) -> str:
 
 def setup_default_workspace(skip_prompt: bool = False) -> Optional[str]:
     """Setup default ComfyUI workspace at ~/ComfyUI"""
+    # First check if COMFY_PATH is set in environment
+    comfy_path = os.getenv('COMFY_PATH')
+    if comfy_path:
+        path = Path(comfy_path)
+        if path.exists() and (path / "main.py").exists():
+            logger.info(f"Using ComfyUI path from environment: {comfy_path}")
+            return comfy_path
+        else:
+            logger.warning(f"COMFY_PATH environment variable points to invalid path: {comfy_path}")
+    
+    # If no valid COMFY_PATH, check default location
     home = Path.home()
     default_path = home / 'ComfyUI'
     
@@ -241,26 +252,16 @@ def setup_default_workspace(skip_prompt: bool = False) -> Optional[str]:
         
         logger.info(f"Installing ComfyUI at {default_path}")
         
-        # Build install command without forcing --skip-prompt
+        # Build install command
         install_cmd = ['comfy', '--workspace', str(default_path), 'install']
         
-        # Add --skip-prompt only if specified
+        # Only add --skip-prompt and GPU flags if skip_prompt is true
         if skip_prompt:
-            install_cmd.insert(-1, '--skip-prompt')
-        
-        # Check command line args first
-        if '--nvidia' in sys.argv:
-            install_cmd.append('--nvidia')
-        elif '--amd' in sys.argv:
-            install_cmd.append('--amd')
-        elif '--intel_arc' in sys.argv:
-            install_cmd.append('--intel_arc')
-        elif '--cpu' in sys.argv:
-            install_cmd.append('--cpu')
-        # If no GPU arg, check environment variable
-        elif default_gpu := os.getenv('DEFAULT_GPU'):
-            if default_gpu.lower() in ['nvidia', 'amd', 'intel_arc', 'cpu']:
-                install_cmd.append(f'--{default_gpu.lower()}')
+            install_cmd.append('--skip-prompt')
+            # Add GPU flag based on environment variable only in skip_prompt mode
+            if default_gpu := os.getenv('DEFAULT_GPU'):
+                if default_gpu.lower() in ['nvidia', 'amd', 'intel_arc', 'cpu']:
+                    install_cmd.append(f'--{default_gpu.lower()}')
         
         # Run install command
         subprocess.run(install_cmd, check=True)
@@ -352,6 +353,53 @@ def copy_user_settings(workspace: str, skip_prompt: bool = False) -> None:
         logger.info(f"Copying user settings from {settings_dir}")
         _copy_settings_files(settings_dir, target_dir)
 
+def handle_manager_setup(workspace: str, skip_prompt: bool = False):
+    """Handle ComfyUI-Manager configuration and snapshot restore."""
+    manager_script = ROOT_DIR / '_utils' / 'manager_utils.py'
+    if not manager_script.exists():
+        logger.warning("Manager utilities script not found")
+        return
+    
+    # Check if we have a default config and verify it exists
+    manager_config = os.getenv('MANAGER_CONFIG')
+    logger.info(f"MANAGER_CONFIG from env: {manager_config}")
+    
+    if manager_config:
+        expanded_config = os.path.expanduser(manager_config)
+        logger.info(f"Expanded config path: {expanded_config}")
+        config_path = Path(expanded_config)
+        logger.info(f"Checking if config exists at: {config_path}")
+        
+        if config_path.is_file():
+            config_msg = f" (default config: {expanded_config})"
+            logger.info("Default config file found")
+        else:
+            logger.warning(f"Default config specified but not found at: {expanded_config}")
+            manager_config = None
+            config_msg = ""
+    else:
+        config_msg = ""
+    
+    if get_user_confirmation(f"Would you like to configure ComfyUI-Manager{config_msg}?"):
+        manager_args = [sys.executable, str(manager_script), '--comfy-path', workspace]
+        
+        # Add manager config from env or args if available
+        if manager_config:
+            expanded_config = os.path.expanduser(manager_config)
+            manager_args.extend(['--manager-config', expanded_config])
+            logger.info(f"Passing manager config path: {expanded_config}")
+        
+        # Add snapshot from env or args if available
+        if snapshot := os.getenv('SNAPSHOT_PATH'):
+            manager_args.extend(['--snapshot', snapshot])
+        
+        if skip_prompt:
+            manager_args.append('--skip-prompt')
+        
+        logger.info("Launching ComfyUI-Manager configuration utility")
+        # Pass the current environment to the subprocess
+        subprocess.run(manager_args, env=os.environ)
+
 def main():
     """Main entry point"""
     print_section("ComfyUI Configuration Tool")
@@ -373,20 +421,37 @@ def main():
     
     # Check for existing workspace
     print_section("Workspace Configuration")
-    workspace = get_comfy_workspace()
-    if not workspace:
-        workspace = setup_default_workspace(skip_prompt)
+    
+    # First check if COMFY_PATH is set in environment
+    comfy_path = os.getenv('COMFY_PATH')
+    if not comfy_path:
+        logger.info("No COMFY_PATH specified in environment")
+        workspace = get_comfy_workspace()
         if not workspace:
-            logger.error("Failed to setup default workspace. Exiting.")
-            sys.exit(1)
-        print_time_diff("ComfyUI installation")
+            workspace = setup_default_workspace(skip_prompt)
+            if not workspace:
+                logger.error("Failed to setup default workspace. Exiting.")
+                sys.exit(1)
+            print_time_diff("ComfyUI installation")
+    else:
+        # Verify the path exists and is valid
+        path = Path(comfy_path)
+        if path.exists() and (path / "main.py").exists():
+            logger.info(f"Using ComfyUI path from environment: {comfy_path}")
+            workspace = comfy_path
+        else:
+            logger.warning(f"COMFY_PATH environment variable points to invalid path: {comfy_path}")
+            workspace = get_comfy_workspace()
+            if not workspace:
+                workspace = setup_default_workspace(skip_prompt)
+                if not workspace:
+                    logger.error("Failed to setup default workspace. Exiting.")
+                    sys.exit(1)
+                print_time_diff("ComfyUI installation")
     
-    logger.info(f"Using ComfyUI workspace: {workspace}")
+    # Set COMFY_PATH in environment
     os.environ['COMFY_PATH'] = workspace
-    
-    # Get current venv status
-    in_venv = sys.prefix != sys.base_prefix
-    venv_path = sys.prefix if in_venv else None
+    logger.info(f"Using ComfyUI workspace: {workspace}")
     
     print_section("Configuration Complete")
     print_time_diff("Final step", is_final=True)
@@ -429,15 +494,13 @@ def main():
     if get_user_confirmation("Would you like to copy user settings?"):
         copy_user_settings(workspace, skip_prompt)
     
+    # Handle ComfyUI-Manager setup
+    print_section("ComfyUI-Manager Configuration")
+    handle_manager_setup(workspace, skip_prompt)
+    
     # Print exit message
-    if in_venv:
-        logger.info(f"Exiting virtual environment at: {venv_path}")
-        logger.info("To use ComfyUI:")
-        logger.info(f"1. Activate the virtual environment: source {venv_path}/bin/activate")
-        logger.info("2. Launch ComfyUI: comfy launch")
-    else:
-        logger.info("To use ComfyUI:")
-        logger.info("1. Launch ComfyUI: comfy launch")
+    logger.info("To use ComfyUI:")
+    logger.info("1. Launch ComfyUI: comfy launch")
     
     sys.exit(0)
 
